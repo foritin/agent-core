@@ -143,6 +143,8 @@ mod tests {
             },
             compaction: Default::default(),
             orchestration: Default::default(),
+            planning: Default::default(),
+            diagnostics: Default::default(),
             tauri: None,
         }
     }

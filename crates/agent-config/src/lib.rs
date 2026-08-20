@@ -34,12 +34,28 @@ pub struct Config {
     #[serde(default)]
     pub orchestration: OrchestrationConfig,
 
+    /// Plan 入口建议客户偏好（docs/plan-mode-dual-track-gate.md §15.1）。
+    /// 普通客户只操作一个布尔偏好；Provider 资格、实验档位和证据版本由宿主
+    /// 控制，不在本 schema 中。
+    #[serde(default)]
+    pub planning: PlanningConfig,
+
     /// 诊断开关（默认全关，不改变任何产品行为）。
     #[serde(default)]
     pub diagnostics: DiagnosticsConfig,
 
     #[serde(default)]
     pub tauri: Option<TauriConfig>,
+}
+
+/// Plan 入口建议的客户偏好。默认关闭：首次默认开启必须等发布硬门全部通过并
+/// 经过分批 rollout（docs §15.1），在此之前 evidence 解析也恒为关闭。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct PlanningConfig {
+    /// DeepSeek 识别到复杂任务时先询问是否制定计划。只影响以后创建的建议；
+    /// 关闭不取消已 pending/accepted 的决定，也不禁用手动 Plan。
+    #[serde(default)]
+    pub suggest_complex_tasks: bool,
 }
 
 /// 诊断开关段。开启的项只增加观测输出（旁路文件 / 计数），不影响请求形状、
@@ -624,6 +640,7 @@ impl Default for Config {
                 trigger_threshold: default_trigger(),
             },
             orchestration: OrchestrationConfig::default(),
+            planning: PlanningConfig::default(),
             diagnostics: DiagnosticsConfig::default(),
             tauri: None,
         }
