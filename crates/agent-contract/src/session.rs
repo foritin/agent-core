@@ -103,6 +103,49 @@ pub enum SessionEvent {
         /// 该字段让「模型看到的输出预算」直接可审计。
         #[serde(default)]
         max_tokens: u32,
+        /// 预算审计组（docs/multimodal-attachments §10 阶段 A）：只写数值、id
+        /// 与 hash，不写图片/文本附件正文、API key 或完整 Provider body。
+        /// 缺省（旧版本写入的行）反序列化为 0/None，不报错。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider_name: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider_kind: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        protocol: Option<String>,
+        #[serde(default)]
+        context_window_tokens: u32,
+        #[serde(default)]
+        text_tokens: u32,
+        #[serde(default)]
+        image_tokens: u32,
+        #[serde(default)]
+        document_tokens: u32,
+        #[serde(default)]
+        tool_schema_tokens: u32,
+        #[serde(default)]
+        estimated_input_tokens: u32,
+        #[serde(default)]
+        requested_output_tokens: u32,
+        /// `effective_output_tokens < minimum` 的请求不应存在；预算闸门在
+        /// 该不变量被破坏前已返回 OUTPUT_HEADROOM_BELOW_MINIMUM 并零发送。
+        #[serde(default)]
+        reserve_tokens: u32,
+        #[serde(default)]
+        materialized_wire_bytes: u64,
+        #[serde(default)]
+        attachment_count: u32,
+        /// Plan 锚定阶段（Off/PlanBootstrap/PlanResident/ExecutionFull）；非
+        /// 锚定请求缺省 None。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        anchoring_phase: Option<String>,
+        /// 上下文注入 profile（Standard/PlanMinimalV1）。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        context_profile: Option<String>,
+        /// 附件 id 短清单（内容 hash 不落审计，正文更不允许）。
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        attachment_ids: Vec<String>,
     },
     System {
         event: String,
@@ -265,6 +308,23 @@ mod tests {
             tool_names: vec!["read_file".into(), "edit".into()],
             hosted_tool_names: vec!["web_search".into()],
             max_tokens: 8_192,
+            provider_name: Some("deepseek-main".into()),
+            provider_kind: Some("deepseek".into()),
+            model: Some("deepseek-v4-flash-vision-exp".into()),
+            protocol: Some("openai_chat".into()),
+            context_window_tokens: 1_000_000,
+            text_tokens: 12_000,
+            image_tokens: 32_000,
+            document_tokens: 0,
+            tool_schema_tokens: 2_048,
+            estimated_input_tokens: 46_048,
+            requested_output_tokens: 393_216,
+            reserve_tokens: 1_024,
+            materialized_wire_bytes: 4_511_012,
+            attachment_count: 1,
+            anchoring_phase: Some("PlanBootstrap".into()),
+            context_profile: Some("PlanMinimalV1".into()),
+            attachment_ids: vec!["att-1".into()],
         };
         let encoded = serde_json::to_string(&ev).unwrap();
         assert!(
@@ -276,6 +336,11 @@ mod tests {
         assert!(encoded.contains(r#""tool_names":["read_file","edit"]"#));
         assert!(encoded.contains(r#""hosted_tool_names":["web_search"]"#));
         assert!(encoded.contains(r#""max_tokens":8192"#));
+        assert!(encoded.contains(r#""image_tokens":32000"#));
+        assert!(encoded.contains(r#""context_window_tokens":1000000"#));
+        assert!(encoded.contains(r#""materialized_wire_bytes":4511012"#));
+        assert!(encoded.contains(r#""attachment_count":1"#));
+        assert!(encoded.contains(r#""anchoring_phase":"PlanBootstrap""#));
         let decoded: SessionEvent = serde_json::from_str(&encoded).unwrap();
         let SessionEvent::RequestHeader {
             system_sha256,
@@ -286,9 +351,26 @@ mod tests {
             tool_names,
             hosted_tool_names,
             max_tokens,
+            provider_name,
+            provider_kind,
+            model,
+            protocol,
+            context_window_tokens,
+            text_tokens,
+            image_tokens,
+            document_tokens,
+            tool_schema_tokens,
+            estimated_input_tokens,
+            requested_output_tokens,
+            reserve_tokens,
+            materialized_wire_bytes,
+            attachment_count,
+            anchoring_phase,
+            context_profile,
+            attachment_ids,
         } = decoded
         else {
-            panic!("wrong event variant");
+            panic!("wrong variant");
         };
         assert_eq!(system_sha256, "aa");
         assert_eq!(tools_sha256, "bb");
@@ -304,8 +386,26 @@ mod tests {
         );
         assert_eq!(hosted_tool_names, vec!["web_search".to_string()]);
         assert_eq!(max_tokens, 8_192);
+        assert_eq!(provider_name.as_deref(), Some("deepseek-main"));
+        assert_eq!(provider_kind.as_deref(), Some("deepseek"));
+        assert_eq!(model.as_deref(), Some("deepseek-v4-flash-vision-exp"));
+        assert_eq!(protocol.as_deref(), Some("openai_chat"));
+        assert_eq!(context_window_tokens, 1_000_000);
+        assert_eq!(text_tokens, 12_000);
+        assert_eq!(image_tokens, 32_000);
+        assert_eq!(document_tokens, 0);
+        assert_eq!(tool_schema_tokens, 2_048);
+        assert_eq!(estimated_input_tokens, 46_048);
+        assert_eq!(requested_output_tokens, 393_216);
+        assert_eq!(reserve_tokens, 1_024);
+        assert_eq!(materialized_wire_bytes, 4_511_012);
+        assert_eq!(attachment_count, 1);
+        assert_eq!(anchoring_phase.as_deref(), Some("PlanBootstrap"));
+        assert_eq!(context_profile.as_deref(), Some("PlanMinimalV1"));
+        assert_eq!(attachment_ids, vec!["att-1".to_string()]);
         // excluded_tails 及 A1 新字段缺省（旧读取器 / 手写行）时反序列化为
-        // 默认值而非报错：tool_names/hosted_tool_names 为空清单，max_tokens 为 0。
+        // 默认值而非报错：tool_names/hosted_tool_names 为空清单，max_tokens 为 0，
+        // 预算审计组为 0/None。
         let without_tails = r#"{"request_header":{"system_sha256":"a","tools_sha256":"b","messages_sha256":"c","reason":"change"}}"#;
         let decoded: SessionEvent = serde_json::from_str(without_tails).unwrap();
         let SessionEvent::RequestHeader {
@@ -313,15 +413,62 @@ mod tests {
             tool_names,
             hosted_tool_names,
             max_tokens,
+            provider_name,
+            context_window_tokens,
+            image_tokens,
+            materialized_wire_bytes,
+            attachment_count,
+            attachment_ids,
             ..
         } = decoded
         else {
-            panic!("wrong event variant");
+            panic!("wrong variant");
         };
         assert!(excluded_tails.is_empty());
         assert!(tool_names.is_empty());
         assert!(hosted_tool_names.is_empty());
         assert_eq!(max_tokens, 0);
+        assert!(provider_name.is_none());
+        assert_eq!(context_window_tokens, 0);
+        assert_eq!(image_tokens, 0);
+        assert_eq!(materialized_wire_bytes, 0);
+        assert_eq!(attachment_count, 0);
+        assert!(attachment_ids.is_empty());
+    }
+
+    #[test]
+    fn request_header_audit_fields_never_carry_payload() {
+        // 审计合同：预算字段只是数值/id；Base64 或附件正文绝不允许出现。
+        let ev = SessionEvent::RequestHeader {
+            system_sha256: "aa".into(),
+            tools_sha256: "bb".into(),
+            messages_sha256: "cc".into(),
+            reason: "change".into(),
+            excluded_tails: Vec::new(),
+            tool_names: Vec::new(),
+            hosted_tool_names: Vec::new(),
+            max_tokens: 4_096,
+            provider_name: Some("p".into()),
+            provider_kind: Some("deepseek".into()),
+            model: Some("m".into()),
+            protocol: Some("openai_chat".into()),
+            context_window_tokens: 1_000_000,
+            text_tokens: 1,
+            image_tokens: 1,
+            document_tokens: 1,
+            tool_schema_tokens: 1,
+            estimated_input_tokens: 4,
+            requested_output_tokens: 4_096,
+            reserve_tokens: 1_024,
+            materialized_wire_bytes: 1,
+            attachment_count: 1,
+            anchoring_phase: None,
+            context_profile: Some("Standard".into()),
+            attachment_ids: vec!["att-1".into()],
+        };
+        let encoded = serde_json::to_string(&ev).unwrap();
+        assert!(!encoded.contains("data"));
+        assert!(!encoded.contains("base64"));
     }
 
     #[test]

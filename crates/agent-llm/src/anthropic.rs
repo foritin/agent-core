@@ -89,13 +89,16 @@ impl AnthropicProvider {
     /// 忽略，不是开启缓存的条件。因此保留 DeepSeek 身份并避免注入无效字段。
     pub fn new_deepseek(api_key: String, model: String, base_url: Option<String>) -> Result<Self> {
         let is_v4 = is_deepseek_v4_alias(&model);
+        let lowercase_model = model.trim().to_ascii_lowercase();
         let mut provider = Self::new(api_key, model, base_url)?;
         provider.emit_explicit_cache_control = false;
         provider.deepseek_automatic_cache = true;
         provider.max_context_tokens = 1_000_000;
         // DeepSeek V4 的单次输出上限是 393_216（API 报错口径）；非 V4 未声明。
         provider.max_output_tokens = if is_v4 { 393_216 } else { 0 };
-        provider.supports_vision = false;
+        // 目录级真值（deepseek.rs）：只有 vision 实验模型支持图片输入。
+        provider.supports_vision =
+            crate::deepseek::deepseek_model_supports_vision(&lowercase_model);
         provider.provider_name = "deepseek_anthropic";
         Ok(provider)
     }
@@ -235,6 +238,7 @@ impl AnthropicProvider {
 
     /// 非流式完成。
     async fn do_complete(&self, request: CompletionRequest) -> Result<CompletionResponse> {
+        crate::assert_no_unresolved_attachments(&request.messages)?;
         let body = self.build_request_body(&request);
         let resp = self.send_with_retry(&body).await?;
 
@@ -252,6 +256,7 @@ impl AnthropicProvider {
         &self,
         request: CompletionRequest,
     ) -> Result<futures::stream::BoxStream<'static, StreamEvent>> {
+        crate::assert_no_unresolved_attachments(&request.messages)?;
         let mut body = self.build_request_body(&request);
         body["stream"] = json!(true);
         let resp = self.send_with_retry(&body).await?;
@@ -465,6 +470,16 @@ fn content_block_to_anthropic(b: &ContentBlock) -> Value {
             v
         }
         ContentBlock::Image { source } => json!({ "type": "image", "source": source }),
+        // 引用块必须在进入适配器前物化（complete/stream 入口已 fail closed 断言）。
+        // 这里只作为直接调用 message_to_anthropic 的最后防线，输出可见错误标记，
+        // 绝不伪造成可被模型误解的正文。
+        ContentBlock::Attachment { source } => json!({
+            "type": "text",
+            "text": format!(
+                "[UNRESOLVED ATTACHMENT {} — materialization skipped; this must not be dispatched]",
+                source.attachment_id
+            ),
+        }),
         ContentBlock::File { source } if source.media_type.starts_with("image/") => json!({
             "type": "image",
             "source": {

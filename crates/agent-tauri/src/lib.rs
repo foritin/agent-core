@@ -145,6 +145,7 @@ mod tests {
             orchestration: Default::default(),
             planning: Default::default(),
             diagnostics: Default::default(),
+            image_understanding: Default::default(),
             tauri: None,
         }
     }

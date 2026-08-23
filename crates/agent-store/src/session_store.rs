@@ -866,8 +866,7 @@ mod tests {
         let content = tokio::fs::read_to_string(&path).await.unwrap();
         let last_line = content
             .lines()
-            .filter(|line| !line.trim().is_empty())
-            .next_back()
+            .rfind(|line| !line.trim().is_empty())
             .unwrap();
         assert!(
             last_line.contains(r#""event":"durable_user_message""#),
@@ -933,6 +932,24 @@ mod tests {
                         tool_names: vec!["read_file".into()],
                         hosted_tool_names: Vec::new(),
                         max_tokens: 4_096,
+                        // 预算审计组（阶段 A）：此处测试缺省组即可（serde 默认）。
+                        provider_name: None,
+                        provider_kind: None,
+                        model: None,
+                        protocol: None,
+                        context_window_tokens: 0,
+                        text_tokens: 0,
+                        image_tokens: 0,
+                        document_tokens: 0,
+                        tool_schema_tokens: 0,
+                        estimated_input_tokens: 0,
+                        requested_output_tokens: 0,
+                        reserve_tokens: 0,
+                        materialized_wire_bytes: 0,
+                        attachment_count: 0,
+                        anchoring_phase: None,
+                        context_profile: None,
+                        attachment_ids: Vec::new(),
                     },
                 )
                 .await

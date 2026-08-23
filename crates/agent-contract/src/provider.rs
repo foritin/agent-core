@@ -273,3 +273,115 @@ impl Capabilities {
         }
     }
 }
+
+/// 多模态模型的确定性视觉 token 预算 profile（docs/multimodal-attachments §6.2）。
+///
+/// 目录中 `vision=true` 的模型必须携带一个 profile；缺失时宿主返回
+/// `VISION_BUDGET_PROFILE_MISSING`，不得回退到 Base64 字符估算或 OCR。
+/// 首版 `deepseek_vision_exp_v1` 使用保守、确定性的 tile 上界。
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct VisionBudgetProfile {
+    pub profile_id: &'static str,
+    pub tile_width: u32,
+    pub tile_height: u32,
+    pub base_tokens: u32,
+    pub tokens_per_tile: u32,
+    /// 保守安全乘数（tile 求和后乘它并向上取整）。
+    pub safety_multiplier: f32,
+    /// 请求侧单边像素上限；超过时生成请求专用派生图。
+    pub max_request_edge: u32,
+    /// 请求侧总像素上限。
+    pub max_request_pixels: u64,
+}
+
+impl VisionBudgetProfile {
+    /// 首版 DeepSeek vision 实验模型 profile。
+    pub const DEEPSEEK_VISION_EXP_V1: Self = Self {
+        profile_id: "deepseek_vision_exp_v1",
+        tile_width: 512,
+        tile_height: 512,
+        base_tokens: 1_024,
+        tokens_per_tile: 2_048,
+        safety_multiplier: 1.25,
+        max_request_edge: 4_096,
+        max_request_pixels: 16_777_216,
+    };
+
+    /// 图片 token 估算：`ceil((base + tiles × per_tile) × multiplier)`。
+    ///
+    /// 1818×1026 → ceil(1818/512)=4 × ceil(1026/512)=3 = 12 tile →
+    /// ceil((1024 + 12×2048) × 1.25) = 32,000。该值与 Base64 字符数完全
+    /// 无关（固定回归锚点；旧伪预算为 1,127,753 token）。
+    pub fn image_tokens(&self, width: u32, height: u32) -> u64 {
+        if width == 0 || height == 0 {
+            return 0;
+        }
+        let tiles_x = (u64::from(width)).div_ceil(u64::from(self.tile_width));
+        let tiles_y = (u64::from(height)).div_ceil(u64::from(self.tile_height));
+        let tiles = tiles_x.saturating_mul(tiles_y);
+        let raw = u64::from(self.base_tokens)
+            .saturating_add(tiles.saturating_mul(u64::from(self.tokens_per_tile)));
+        let scaled = (raw as f64 * f64::from(self.safety_multiplier)).ceil();
+        scaled as u64
+    }
+
+    /// 请求尺寸是否超出 profile 上限（需生成等比缩放派生图）。
+    pub fn exceeds_request_bounds(&self, width: u32, height: u32) -> bool {
+        width > self.max_request_edge
+            || height > self.max_request_edge
+            || u64::from(width) * u64::from(height) > self.max_request_pixels
+    }
+
+    /// 等比缩放到请求上限内的目标尺寸（保持宽高比，至少 1×1）。
+    pub fn scale_to_request_bounds(&self, width: u32, height: u32) -> (u32, u32) {
+        if !self.exceeds_request_bounds(width, height) {
+            return (width.max(1), height.max(1));
+        }
+        let edge_scale = if width.max(height) > self.max_request_edge {
+            f64::from(self.max_request_edge) / f64::from(width.max(height))
+        } else {
+            1.0
+        };
+        let pixel_scale = if u64::from(width) * u64::from(height) > self.max_request_pixels {
+            (self.max_request_pixels as f64 / (f64::from(width) * f64::from(height))).sqrt()
+        } else {
+            1.0
+        };
+        let scale = edge_scale.min(pixel_scale).min(1.0);
+        let scaled_width = ((f64::from(width) * scale).floor() as u32).max(1);
+        let scaled_height = ((f64::from(height) * scale).floor() as u32).max(1);
+        (scaled_width, scaled_height)
+    }
+}
+
+#[cfg(test)]
+mod vision_budget_tests {
+    use super::*;
+
+    #[test]
+    fn deepseek_regression_fixture_is_exactly_32000_tokens() {
+        let profile = VisionBudgetProfile::DEEPSEEK_VISION_EXP_V1;
+        // 固定回归样本：1818×1026 / 3,383,259 bytes / base64 4,511,012 chars。
+        assert_eq!(profile.image_tokens(1818, 1026), 32_000);
+    }
+
+    #[test]
+    fn image_tokens_independent_of_base64_length() {
+        let profile = VisionBudgetProfile::DEEPSEEK_VISION_EXP_V1;
+        let a = profile.image_tokens(1818, 1026);
+        // 尺寸相同即估算相同；Base64 体积不参与。
+        assert_eq!(profile.image_tokens(1818, 1026), a);
+        assert_eq!(a, 32_000);
+        assert!(a < 40_000, "tile 上界必须远离 Base64 伪预算 1,127,753");
+    }
+
+    #[test]
+    fn scaling_respects_bounds_and_ratio() {
+        let profile = VisionBudgetProfile::DEEPSEEK_VISION_EXP_V1;
+        let (w, h) = profile.scale_to_request_bounds(8000, 6000);
+        assert!(w <= profile.max_request_edge && h <= profile.max_request_edge);
+        assert!(u64::from(w) * u64::from(h) <= profile.max_request_pixels);
+        let ratio = f64::from(w) / f64::from(h);
+        assert!((ratio - 8.0 / 6.0).abs() < 0.05, "ratio drifted: {ratio}");
+    }
+}

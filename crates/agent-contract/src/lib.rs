@@ -22,10 +22,13 @@ pub use agent_error::{
 };
 
 pub use compaction::CompactionStrategy;
-pub use message::{ContentBlock, FileSource, ImageSource, Message, Role};
+pub use message::{
+    AttachmentKind, AttachmentPurpose, AttachmentRefV1, ContentBlock, FileSource, ImageSource,
+    Message, Role,
+};
 pub use provider::{
     Capabilities, CompletionRequest, CompletionResponse, HostedToolFormat, HostedToolSpec,
-    InferenceOptions, LlmProvider, StopReason, StreamEvent,
+    InferenceOptions, LlmProvider, StopReason, StreamEvent, VisionBudgetProfile,
 };
 pub use session::{Session, SessionEvent, SessionMeta, SessionStatus};
 pub use tool_host::{

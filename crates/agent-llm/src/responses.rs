@@ -105,17 +105,17 @@ impl ResponsesProvider {
     /// DeepSeek Responses 仍使用无状态全历史重放，但能力、上下文窗口与缓存
     /// usage 语义必须保留 DeepSeek 身份，不能退化为通用 Responses provider。
     pub fn new_deepseek(api_key: String, model: String, base_url: String) -> Self {
-        let is_v4 = model
-            .trim()
-            .to_ascii_lowercase()
-            .starts_with("deepseek-v4-")
-            || model.trim().eq_ignore_ascii_case("deepseek-chat");
+        let lowercase_model = model.trim().to_ascii_lowercase();
+        let is_v4 =
+            lowercase_model.starts_with("deepseek-v4-") || lowercase_model == "deepseek-chat";
         let mut provider = Self::new(api_key, model, base_url);
         provider.max_context_tokens = 1_000_000;
         // DeepSeek V4 的单次输出上限是 393_216（API 报错口径）；非 V4 未声明。
         provider.max_output_tokens = if is_v4 { 393_216 } else { 0 };
         provider.deepseek_automatic_cache = true;
-        provider.supports_vision = false;
+        // 目录级真值（deepseek.rs）：只有 vision 实验模型支持图片输入。
+        provider.supports_vision =
+            crate::deepseek::deepseek_model_supports_vision(&lowercase_model);
         provider.provider_name = "deepseek_responses";
         // DeepSeek Responses 的 thinking 模式返回明文 reasoning_text，下一轮必须原样
         // 回传，否则 400（见 ReasoningMode::PlaintextReplay）。
@@ -280,6 +280,7 @@ impl ResponsesProvider {
 #[async_trait::async_trait]
 impl LlmProvider for ResponsesProvider {
     async fn complete(&self, request: CompletionRequest) -> Result<CompletionResponse> {
+        crate::assert_no_unresolved_attachments(&request.messages)?;
         let body = self.build_body(&request, false);
         let resp = crate::openai::send_with_retry(
             &self.client,
@@ -299,6 +300,7 @@ impl LlmProvider for ResponsesProvider {
         &self,
         request: CompletionRequest,
     ) -> Result<futures::stream::BoxStream<'static, StreamEvent>> {
+        crate::assert_no_unresolved_attachments(&request.messages)?;
         let body = self.build_body(&request, true);
         let resp = crate::openai::send_with_retry(
             &self.client,

@@ -137,6 +137,15 @@ impl OpenAiProvider {
     fn build_body(&self, request: &CompletionRequest, stream: bool) -> Value {
         let mut messages: Vec<Value> = Vec::new();
 
+        // fail closed：未物化的附件引用不得进入最终序列化（降级为占位文本
+        // 会静默丢图）。build_body 是无 IO 的纯构造，这里以断言失败 panic 之外
+        // 的方式不可行——调用方（complete/stream）已在入口先行校验，此处再以
+        // debug_assert 兜底，保证任何新调用路径都不会静默吞掉引用。
+        debug_assert!(
+            crate::assert_no_unresolved_attachments(&request.messages).is_ok(),
+            "unresolved ContentBlock::Attachment reached openai build_body"
+        );
+
         // system 作为角色注入
         if let Some(system) = &request.system {
             messages.push(json!({ "role": "system", "content": system }));
@@ -343,6 +352,7 @@ fn openrouter_server_tool(
 #[async_trait::async_trait]
 impl LlmProvider for OpenAiProvider {
     async fn complete(&self, request: CompletionRequest) -> Result<CompletionResponse> {
+        crate::assert_no_unresolved_attachments(&request.messages)?;
         let body = self.build_body(&request, false);
         let resp =
             send_with_retry(&self.client, &self.completions_url(), &self.api_key, &body).await?;
@@ -357,6 +367,7 @@ impl LlmProvider for OpenAiProvider {
         &self,
         request: CompletionRequest,
     ) -> Result<futures::stream::BoxStream<'static, StreamEvent>> {
+        crate::assert_no_unresolved_attachments(&request.messages)?;
         let mut body = self.build_body(&request, true);
         let resp = match send_with_retry(
             &self.client,

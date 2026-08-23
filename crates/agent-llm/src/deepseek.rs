@@ -14,6 +14,16 @@ pub struct DeepSeekProvider {
     inner: OpenAiProvider,
     max_context_tokens: u32,
     max_output_tokens: u32,
+    supports_vision: bool,
+}
+
+/// DeepSeek 目录级的 vision 真值（docs/multimodal-attachments §5.1）。
+///
+/// 官方唯一支持图片输入的是实验模型 `deepseek-v4-flash-vision-exp`；其余
+/// V4 模型一律不支持。这里与 `provider_catalog.rs` 的人工核对目录保持一致，
+/// 双方以测试互锁（catalog 与 adapter 真值不一致时测试失败）。
+pub fn deepseek_model_supports_vision(lowercase_model: &str) -> bool {
+    lowercase_model == "deepseek-v4-flash-vision-exp"
 }
 
 impl DeepSeekProvider {
@@ -30,6 +40,7 @@ impl DeepSeekProvider {
         // DeepSeek V4 的单次输出上限是 393_216（API 报错口径）；非 V4 未声明，
         // 由运行时回退到旧的 max_tokens 启发。
         let max_output_tokens = if is_v4 { 393_216 } else { 0 };
+        let supports_vision = deepseek_model_supports_vision(&model);
         let base_url = base_url
             .filter(|url| !url.trim().is_empty())
             .unwrap_or_else(|| DEEPSEEK_BASE_URL.to_string());
@@ -39,6 +50,7 @@ impl DeepSeekProvider {
             inner: OpenAiProvider::new(api_key, model, base_url).with_stream_usage(),
             max_context_tokens,
             max_output_tokens,
+            supports_vision,
         }
     }
 }
@@ -60,7 +72,7 @@ impl LlmProvider for DeepSeekProvider {
         Capabilities {
             supports_streaming: true,
             supports_tool_use: true,
-            supports_vision: false,
+            supports_vision: self.supports_vision,
             // DeepSeek 对字节稳定前缀自动缓存 KV（无需 API 开关），能力声明置 true
             // （https://github.com/foritin/r-code/blob/main/docs/archive/deepseek-prefix-cache.md §3 A8，P0-B）。
             supports_prompt_caching: true,
@@ -100,9 +112,28 @@ mod tests {
         assert_eq!(chat.capabilities().max_output_tokens, 393_216);
     }
 
+    /// docs/multimodal-attachments §5.1 的目录真值表：只有 vision 实验模型
+    /// 支持图片输入。此前 `supports_vision` 恒为 false 与 provider_catalog 的
+    /// `vision=true` 标注互相矛盾（能力声明漂移的根源之一）。
+    #[test]
+    fn deepseek_vision_truth_table() {
+        let vision_exp = DeepSeekProvider::new("k".into(), "DeepSeek-V4-Flash-Vision-Exp".into());
+        assert!(vision_exp.capabilities().supports_vision);
+        assert_eq!(vision_exp.capabilities().max_context_tokens, 1_000_000);
+
+        let flash = DeepSeekProvider::new("k".into(), "deepseek-v4-flash".into());
+        assert!(!flash.capabilities().supports_vision);
+
+        let pro = DeepSeekProvider::new("k".into(), "deepseek-v4-pro".into());
+        assert!(!pro.capabilities().supports_vision);
+
+        let chat_alias = DeepSeekProvider::new("k".into(), "deepseek-chat".into());
+        assert!(!chat_alias.capabilities().supports_vision);
+    }
+
     #[test]
     fn empty_key_still_constructs() {
-        // DeepSeek 复用 OpenAi，构造不做 key 校验（与文档示例一致）
+        // DeepSeek 复用 OpenAI，构造不做 key 校验（与文档示例一致）
         let p = DeepSeekProvider::new("".into(), "m".into());
         assert_eq!(p.name(), "deepseek");
     }

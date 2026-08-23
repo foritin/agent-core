@@ -122,6 +122,14 @@ pub enum ContentBlock {
     /// 普通文本块。文件名仅用于向模型说明来源，不参与本地路径解析。
     File { source: FileSource },
 
+    /// 附件引用块（R-Code 持久附件，docs/multimodal-attachments §4.1）。
+    ///
+    /// 二进制正文只存一份于宿主 BlobStore；会话/队列/投影只携带本引用。
+    /// Base64 仅允许出现在两个临时边界：WebView staging IPC 与 Provider 请求
+    /// 构造期的物化副本。Provider 适配层在最终序列化前必须断言不存在未物化
+    /// 的 Attachment（fail closed），不得降级为占位文本后继续请求。
+    Attachment { source: AttachmentRefV1 },
+
     /// 产品层扩展块（如文件引用、选区引用等）。公共层不解释其语义，
     /// 仅保证可序列化与透传；Provider 适配层将其降级为占位文本。
     Custom {
@@ -188,6 +196,9 @@ impl ContentBlock {
                 .as_deref()
                 .map(|text| (text.len() / 4) as u32)
                 .unwrap_or(10),
+            // 引用块只有少量可见元数据；图片/PDF token 由 VisionBudgetProfile
+            // 等确定性 profile 单独核算，绝不由字节数估算。
+            ContentBlock::Attachment { .. } => 10,
             _ => 10,
         }
     }
@@ -222,6 +233,48 @@ pub struct FileSource {
     pub text: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub data: Option<String>,
+}
+
+/// 附件类别（AttachmentRefV1.kind）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AttachmentKind {
+    Image,
+    Text,
+    Pdf,
+}
+
+/// 附件用途：决定引用块在 Provider 请求中的去向。
+///
+/// - `NativeInput`：当前主模型直接读取的原图/PDF（多模态主模型场景）。
+/// - `TextInput`：普通文本附件；Provider 投影阶段读取 Blob 展开 UTF-8 文本。
+/// - `DisplayOnly`：文本主模型场景下保留原图预览；不进入 Provider 请求。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AttachmentPurpose {
+    NativeInput,
+    TextInput,
+    DisplayOnly,
+}
+
+/// 附件引用（v1）。`attachment_id` 是解析 Blob 的唯一公开键——调用方不得
+/// 提交 blob hash 或文件路径来绕过所有权检查；读取时以数据库元数据为权威，
+/// 消息内元数据只用于无 IO 展示与预算预检。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AttachmentRefV1 {
+    /// 固定为 1。
+    pub version: u8,
+    /// UUID；不包含本机路径。
+    pub attachment_id: String,
+    pub name: String,
+    pub media_type: String,
+    pub kind: AttachmentKind,
+    pub byte_len: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height: Option<u32>,
+    pub purpose: AttachmentPurpose,
 }
 
 #[cfg(test)]
@@ -294,5 +347,104 @@ mod tests {
     fn estimate_tokens_nonzero() {
         let m = Message::user_text("a fairly long piece of text for estimation");
         assert!(m.estimate_tokens() > 0);
+    }
+
+    #[test]
+    fn attachment_ref_roundtrip_and_no_payload_leak() {
+        let block = ContentBlock::Attachment {
+            source: AttachmentRefV1 {
+                version: 1,
+                attachment_id: "0e0f1d2a-1111-4222-8333-444455556666".into(),
+                name: "screenshot.png".into(),
+                media_type: "image/png".into(),
+                kind: AttachmentKind::Image,
+                byte_len: 3_383_259,
+                width: Some(1818),
+                height: Some(1026),
+                purpose: AttachmentPurpose::NativeInput,
+            },
+        };
+        let json = serde_json::to_string(&block).unwrap();
+        assert!(json.contains(r#""type":"attachment""#), "encoded: {json}");
+        let back: ContentBlock = serde_json::from_str(&json).unwrap();
+        match back {
+            ContentBlock::Attachment { source } => {
+                assert_eq!(source.version, 1);
+                assert_eq!(source.kind, AttachmentKind::Image);
+                assert_eq!(source.purpose, AttachmentPurpose::NativeInput);
+                assert_eq!(source.width, Some(1818));
+                assert_eq!(source.height, Some(1026));
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+        // 引用块序列化只含元数据：不携带 Base64 正文或本机路径。
+        assert!(!json.contains("data"));
+        assert!(!json.contains("base64"));
+        assert!(!json.contains('\\'));
+    }
+
+    #[test]
+    fn attachment_purpose_and_kind_serde_names() {
+        assert_eq!(
+            serde_json::to_string(&AttachmentPurpose::DisplayOnly).unwrap(),
+            r#""display_only""#
+        );
+        assert_eq!(
+            serde_json::to_string(&AttachmentPurpose::NativeInput).unwrap(),
+            r#""native_input""#
+        );
+        assert_eq!(
+            serde_json::to_string(&AttachmentPurpose::TextInput).unwrap(),
+            r#""text_input""#
+        );
+        assert_eq!(
+            serde_json::to_string(&AttachmentKind::Image).unwrap(),
+            r#""image""#
+        );
+        assert_eq!(
+            serde_json::to_string(&AttachmentKind::Text).unwrap(),
+            r#""text""#
+        );
+        assert_eq!(
+            serde_json::to_string(&AttachmentKind::Pdf).unwrap(),
+            r#""pdf""#
+        );
+    }
+
+    #[test]
+    fn legacy_file_block_still_roundtrips_alongside_attachment() {
+        // 双读合同：旧 File 块与新 Attachment 块可在同一条消息中并存。
+        let message = Message {
+            role: Role::User,
+            content: vec![
+                ContentBlock::File {
+                    source: FileSource {
+                        kind: "base64".into(),
+                        name: "legacy.png".into(),
+                        media_type: "image/png".into(),
+                        text: None,
+                        data: Some("aGVsbG8=".into()),
+                    },
+                },
+                ContentBlock::Attachment {
+                    source: AttachmentRefV1 {
+                        version: 1,
+                        attachment_id: "id-1".into(),
+                        name: "new.png".into(),
+                        media_type: "image/png".into(),
+                        kind: AttachmentKind::Image,
+                        byte_len: 8,
+                        width: None,
+                        height: None,
+                        purpose: AttachmentPurpose::TextInput,
+                    },
+                },
+            ],
+        };
+        let json = serde_json::to_string(&message).unwrap();
+        let back: Message = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.content.len(), 2);
+        assert!(matches!(back.content[0], ContentBlock::File { .. }));
+        assert!(matches!(back.content[1], ContentBlock::Attachment { .. }));
     }
 }

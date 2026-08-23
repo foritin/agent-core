@@ -24,8 +24,29 @@ pub use mock::{MockProvider, RecordedTurn};
 pub use openai::OpenAiProvider;
 pub use responses::{ReasoningMode, ResponsesProvider};
 
-use agent_contract::LlmProvider;
-use agent_error::Result;
+use agent_contract::{ContentBlock, LlmProvider, Message};
+use agent_error::{other, Result};
+
+/// 断言请求消息中不存在未物化的 `ContentBlock::Attachment`（fail closed）。
+///
+/// 引用块必须在进入适配器前由运行时从 BlobStore 物化为 `Image`/`File` 块。
+/// 把引用降级为占位文本后继续请求会静默丢图——这是验收失败，必须返回类型化
+/// 错误（docs/multimodal-attachments §6.3）。各协议适配器在最终序列化前调用。
+pub fn assert_no_unresolved_attachments(messages: &[Message]) -> Result<()> {
+    for message in messages {
+        for block in &message.content {
+            if let ContentBlock::Attachment { source } = block {
+                return Err(other(format!(
+                    "ATTACHMENT_NOT_MATERIALIZED: attachment '{}' ({}) reached the provider \
+                     adapter unresolved; the runtime must materialize it from the blob store \
+                     before dispatch",
+                    source.name, source.attachment_id
+                )));
+            }
+        }
+    }
+    Ok(())
+}
 
 /// Provider 配置（工厂入参）。
 #[derive(Debug, Clone)]
@@ -211,6 +232,41 @@ pub fn create_provider(config: ProviderConfig) -> Result<Box<dyn LlmProvider>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use agent_contract::{AttachmentKind, AttachmentPurpose, AttachmentRefV1};
+
+    #[test]
+    fn unresolved_attachment_fails_closed_before_dispatch() {
+        let message = Message {
+            role: agent_contract::Role::User,
+            content: vec![
+                agent_contract::ContentBlock::Text { text: "hi".into() },
+                agent_contract::ContentBlock::Attachment {
+                    source: AttachmentRefV1 {
+                        version: 1,
+                        attachment_id: "att-1".into(),
+                        name: "shot.png".into(),
+                        media_type: "image/png".into(),
+                        kind: AttachmentKind::Image,
+                        byte_len: 8,
+                        width: Some(8),
+                        height: Some(8),
+                        purpose: AttachmentPurpose::NativeInput,
+                    },
+                },
+            ],
+        };
+        let error = assert_no_unresolved_attachments(&[message]).unwrap_err();
+        let text = error.to_string();
+        assert!(text.contains("ATTACHMENT_NOT_MATERIALIZED"), "got: {text}");
+        // 错误详情不得包含附件元数据以外的任何正文。
+        assert!(text.contains("att-1"));
+    }
+
+    #[test]
+    fn materialized_messages_pass_the_gate() {
+        let message = Message::user_text("plain");
+        assert!(assert_no_unresolved_attachments(&[message]).is_ok());
+    }
 
     #[test]
     fn factory_builds_each_protocol() {

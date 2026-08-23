@@ -44,8 +44,38 @@ pub struct Config {
     #[serde(default)]
     pub diagnostics: DiagnosticsConfig,
 
+    /// 图片理解引擎（本机 OCR / 视觉模型，二选一，默认 OCR）。
+    /// 旧配置缺失该段时反序列化为默认值，不产生迁移错误。
+    #[serde(default)]
+    pub image_understanding: ImageUnderstandingConfig,
+
     #[serde(default)]
     pub tauri: Option<TauriConfig>,
+}
+
+/// 图片理解引擎选择（docs/settings-ux-and-image-understanding.md D2）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ImageUnderstandingEngine {
+    /// 本机系统 OCR：png/jpeg 提取文字注入上下文（离线、免费）。
+    #[default]
+    Ocr,
+    /// 视觉模型：由配置的多模态模型理解整张图片并生成描述文本。
+    Model,
+}
+
+/// 图片理解配置。`engine == Model` 时 `model_provider` / `model` 必填，
+/// 发送路径会做权威校验并返回可读错误。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ImageUnderstandingConfig {
+    #[serde(default)]
+    pub engine: ImageUnderstandingEngine,
+    /// engine == Model 时必填：`config.providers` 的 key。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_provider: Option<String>,
+    /// engine == Model 时必填：该 provider 下的模型 id。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
 }
 
 /// Plan 入口建议的客户偏好。默认关闭：首次默认开启必须等发布硬门全部通过并
@@ -56,6 +86,17 @@ pub struct PlanningConfig {
     /// 关闭不取消已 pending/accepted 的决定，也不禁用手动 Plan。
     #[serde(default)]
     pub suggest_complex_tasks: bool,
+    /// DeepSeek Plan 锚定（docs/multimodal-attachments §8.1）：用户实际进入
+    /// DeepSeek Plan 后，是否启用最小 Plan 轨迹（5→8 只读目录 + 最小注入）与
+    /// 批准后的完整执行恢复。
+    ///
+    /// 与 `suggest_complex_tasks` 互不替代：可以关闭自动建议但手动进入 Plan 时
+    /// 仍启用锚定，也可以保留建议但让 Plan 使用 baseline。默认 false，旧配置
+    /// 缺字段时为 false。`R_CODE_PLANNING_EMERGENCY_OFF=1` 同时关闭两者（但不
+    /// 关闭 Plan 的只读安全硬门）。开关值在 Plan 创建时冻结；运行中切换设置只
+    /// 影响之后新建的 Plan。
+    #[serde(default)]
+    pub deepseek_plan_anchoring: bool,
 }
 
 /// 诊断开关段。开启的项只增加观测输出（旁路文件 / 计数），不影响请求形状、
@@ -642,6 +683,7 @@ impl Default for Config {
             orchestration: OrchestrationConfig::default(),
             planning: PlanningConfig::default(),
             diagnostics: DiagnosticsConfig::default(),
+            image_understanding: ImageUnderstandingConfig::default(),
             tauri: None,
         }
     }
@@ -696,6 +738,37 @@ impl Config {
         }
         self.orchestration.run_budget.validate()?;
         self.orchestration.subagent_pool.validate()?;
+        if self.image_understanding.engine == ImageUnderstandingEngine::Model {
+            let provider = self
+                .image_understanding
+                .model_provider
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| {
+                    Error::Config(
+                        "image_understanding.engine = \"model\" requires model_provider"
+                            .to_string(),
+                    )
+                })?;
+            if !self.providers.contains_key(provider) {
+                return Err(Error::Config(format!(
+                    "image_understanding.model_provider '{provider}' is not configured"
+                )));
+            }
+            if self
+                .image_understanding
+                .model
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .is_none()
+            {
+                return Err(Error::Config(
+                    "image_understanding.engine = \"model\" requires model".to_string(),
+                ));
+            }
+        }
         if !self.providers.contains_key(&self.default_provider) {
             return Err(Error::Config(format!(
                 "default provider '{}' not configured",
@@ -742,6 +815,81 @@ mod tests {
     use super::*;
     use std::io::Write;
     use std::sync::Mutex;
+
+    fn image_ready_config() -> Config {
+        let mut config = Config::default();
+        config.providers.insert(
+            "openai".to_string(),
+            ProviderConfig {
+                base_url: "https://api.openai.com/v1".to_string(),
+                api_key: "sk-test".to_string(),
+                model: "gpt-5.5".to_string(),
+                provider_kind: Some("openai".to_string()),
+                max_tokens: None,
+                temperature: None,
+                protocol: None,
+                show_reasoning: true,
+            },
+        );
+        config.default_provider = "openai".to_string();
+        config
+    }
+
+    #[test]
+    fn image_understanding_defaults_to_ocr_and_migrates_legacy_configs() {
+        let config: Config = toml::from_str("").unwrap();
+        assert_eq!(
+            config.image_understanding.engine,
+            ImageUnderstandingEngine::Ocr
+        );
+        assert_eq!(config.image_understanding.model_provider, None);
+        assert_eq!(
+            config.image_understanding,
+            ImageUnderstandingConfig::default()
+        );
+        // 旧配置（无该段）可通过 validate。
+        let config = image_ready_config();
+        assert!(config.validate().is_ok());
+        // snake_case 往返。
+        let stored: Config = toml::from_str(
+            "[image_understanding]
+engine = \"model\"
+model_provider = \"openai\"
+model = \"gpt-5.5\"
+",
+        )
+        .unwrap();
+        assert_eq!(
+            stored.image_understanding.engine,
+            ImageUnderstandingEngine::Model
+        );
+        assert_eq!(
+            stored.image_understanding.model_provider.as_deref(),
+            Some("openai")
+        );
+        assert_eq!(stored.image_understanding.model.as_deref(), Some("gpt-5.5"));
+    }
+
+    #[test]
+    fn image_understanding_model_engine_requires_provider_and_model() {
+        let mut config = image_ready_config();
+        config.image_understanding.engine = ImageUnderstandingEngine::Model;
+        // 缺 provider / model 都必须被拒绝。
+        let missing_all = config.validate().unwrap_err().to_string();
+        assert!(missing_all.contains("model_provider"), "{missing_all}");
+        config.image_understanding.model_provider = Some("nonexistent".to_string());
+        let missing_provider = config.validate().unwrap_err().to_string();
+        assert!(
+            missing_provider.contains("not configured"),
+            "{missing_provider}"
+        );
+        config.image_understanding.model_provider = Some("openai".to_string());
+        config.image_understanding.model = Some("  ".to_string());
+        let missing_model = config.validate().unwrap_err().to_string();
+        assert!(missing_model.contains("requires model"), "{missing_model}");
+        config.image_understanding.model = Some("gpt-5.5".to_string());
+        assert!(config.validate().is_ok());
+    }
 
     fn subagent_slot(slot_id: &str, provider_id: &str, weight: u8) -> SubagentProviderSlot {
         SubagentProviderSlot {
