@@ -41,6 +41,9 @@ impl SessionMeta {
 /// 用于区分正常结果与失败 / 取消结果。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+// RequestHeader 是一次一写的审计快照，平铺字段是刻意设计（serde 兼容旧行、
+// 构造点零样板）；Box 化各字段换来的内存收益对 JSONL 事件流没有意义。
+#[allow(clippy::large_enum_variant)]
 pub enum SessionEvent {
     Meta(SessionMeta),
     Message(Message),
