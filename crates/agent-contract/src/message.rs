@@ -122,7 +122,7 @@ pub enum ContentBlock {
     /// 普通文本块。文件名仅用于向模型说明来源，不参与本地路径解析。
     File { source: FileSource },
 
-    /// 附件引用块（R-Code 持久附件，docs/multimodal-attachments §4.1）。
+    /// 附件引用块（R-Code 持久附件，docs/archive/implementation/multimodal-attachments-and-deepseek-plan-anchoring-implementation.md §4.1）。
     ///
     /// 二进制正文只存一份于宿主 BlobStore；会话/队列/投影只携带本引用。
     /// Base64 仅允许出现在两个临时边界：WebView staging IPC 与 Provider 请求

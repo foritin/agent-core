@@ -34,7 +34,7 @@ pub struct Config {
     #[serde(default)]
     pub orchestration: OrchestrationConfig,
 
-    /// Plan 入口建议客户偏好（docs/plan-mode-dual-track-gate.md §15.1）。
+    /// Plan 入口建议客户偏好（docs/archive/implementation/plan-mode-dual-track-gate.md §15.1）。
     /// 普通客户只操作一个布尔偏好；Provider 资格、实验档位和证据版本由宿主
     /// 控制，不在本 schema 中。
     #[serde(default)]
@@ -53,7 +53,7 @@ pub struct Config {
     pub tauri: Option<TauriConfig>,
 }
 
-/// 图片理解引擎选择（docs/settings-ux-and-image-understanding.md D2）。
+/// 图片理解引擎选择（docs/archive/implementation/settings-ux-and-image-understanding.md D2）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum ImageUnderstandingEngine {
@@ -86,7 +86,7 @@ pub struct PlanningConfig {
     /// 关闭不取消已 pending/accepted 的决定，也不禁用手动 Plan。
     #[serde(default)]
     pub suggest_complex_tasks: bool,
-    /// DeepSeek Plan 锚定（docs/multimodal-attachments §8.1）：用户实际进入
+    /// DeepSeek Plan 锚定（docs/archive/implementation/multimodal-attachments-and-deepseek-plan-anchoring-implementation.md §8.1）：用户实际进入
     /// DeepSeek Plan 后，是否启用最小 Plan 轨迹（5→8 只读目录 + 最小注入）与
     /// 批准后的完整执行恢复。
     ///
@@ -103,7 +103,7 @@ pub struct PlanningConfig {
 /// 执行判定与 canonical 会话数据。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DiagnosticsConfig {
-    /// 会话请求信封审计（docs/request-audit-and-anchoring.md 阶段 A）。默认关闭。
+    /// 会话请求信封审计（docs/archive/implementation/request-audit-and-anchoring.md 阶段 A）。默认关闭。
     /// 开启后每轮派发前向 sessions/request-audit/{storage_id}.jsonl 追加
     /// RequestHeader（含目录清单与输出预算）并做重建自检（log-only）。
     #[serde(default)]
@@ -360,7 +360,7 @@ pub struct OrchestrationConfig {
     /// 长任务循环护栏预算与停止信号阈值。
     #[serde(default)]
     pub run_budget: RunBudgetConfig,
-    /// 首轮派发的工具目录策略（锚定实验，docs/request-audit-and-anchoring.md C1）。
+    /// 首轮派发的工具目录策略（锚定实验，docs/archive/implementation/request-audit-and-anchoring.md C1）。
     /// 默认 Full 即现状（不过滤）；非默认值仅裁剪模型可见目录（呈现层），
     /// 不改变任何执行判定。
     #[serde(default)]
@@ -379,7 +379,7 @@ pub enum FirstRoundCatalog {
     #[default]
     Full,
     /// 首轮只暴露只读探索五件套。serde 名固定为 "readonly"（无下划线，
-    /// 与 docs/request-audit-and-anchoring.md B2 分组名一致）。
+    /// 与 docs/archive/implementation/request-audit-and-anchoring.md B2 分组名一致）。
     #[serde(rename = "readonly")]
     ReadOnly,
     /// 首轮只暴露 read_file + edit（对标 dsh Minimal 工具对的编辑变体）。

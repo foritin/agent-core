@@ -242,7 +242,7 @@ impl SessionStore {
                 SessionEvent::ModelProjection {
                     messages: projection,
                 } => model_projection = projection,
-                // 1.3（docs/harness-migration.md §1.3）：请求信封快照只用于审计与
+                // 1.3（docs/archive/implementation/harness-migration.md §1.3）：请求信封快照只用于审计与
                 // 派发前重建自检，不参与 messages / usage / tool_calls 投影
                 // （no-op）。若不显式列出，编译器会因新增变体而拒绝穷举 match，
                 // 这正是把「不得进入投影」固化为类型义务的方式。

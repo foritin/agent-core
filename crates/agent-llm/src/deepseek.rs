@@ -17,7 +17,7 @@ pub struct DeepSeekProvider {
     supports_vision: bool,
 }
 
-/// DeepSeek 目录级的 vision 真值（docs/multimodal-attachments §5.1）。
+/// DeepSeek 目录级的 vision 真值（docs/archive/implementation/multimodal-attachments-and-deepseek-plan-anchoring-implementation.md §5.1）。
 ///
 /// 官方唯一支持图片输入的是实验模型 `deepseek-v4-flash-vision-exp`；其余
 /// V4 模型一律不支持。这里与 `provider_catalog.rs` 的人工核对目录保持一致，
@@ -112,7 +112,7 @@ mod tests {
         assert_eq!(chat.capabilities().max_output_tokens, 393_216);
     }
 
-    /// docs/multimodal-attachments §5.1 的目录真值表：只有 vision 实验模型
+    /// docs/archive/implementation/multimodal-attachments-and-deepseek-plan-anchoring-implementation.md §5.1 的目录真值表：只有 vision 实验模型
     /// 支持图片输入。此前 `supports_vision` 恒为 false 与 provider_catalog 的
     /// `vision=true` 标注互相矛盾（能力声明漂移的根源之一）。
     #[test]

@@ -72,7 +72,7 @@ pub enum SessionEvent {
     ModelProjection {
         messages: Option<Vec<Message>>,
     },
-    /// 模型请求信封快照（docs/harness-migration.md §1.3）。每次派发前追加；
+    /// 模型请求信封快照（docs/archive/implementation/harness-migration.md §1.3）。每次派发前追加；
     /// `reason` 区分 initial / resume / change。只存哈希不存全文（体积考虑：
     /// 全文每轮落盘会让 JSONL 随轮数平方膨胀）。
     ///
@@ -95,7 +95,7 @@ pub enum SessionEvent {
         excluded_tails: Vec<String>,
         /// 本轮 tools 数组的名字清单（按派发顺序，含 hosted 工具别名后的名字）。
         /// 与 tools_sha256 互补：哈希负责字节级身份判等，名字清单负责 jq 级
-        /// 人可读审计（docs/request-audit-and-anchoring.md A1）。
+        /// 人可读审计（docs/archive/implementation/request-audit-and-anchoring.md A1）。
         #[serde(default)]
         tool_names: Vec<String>,
         /// 本轮 hosted 工具名（summary_only 轮为空）。
@@ -106,7 +106,7 @@ pub enum SessionEvent {
         /// 该字段让「模型看到的输出预算」直接可审计。
         #[serde(default)]
         max_tokens: u32,
-        /// 预算审计组（docs/multimodal-attachments §10 阶段 A）：只写数值、id
+        /// 预算审计组（docs/archive/implementation/multimodal-attachments-and-deepseek-plan-anchoring-implementation.md §10 阶段 A）：只写数值、id
         /// 与 hash，不写图片/文本附件正文、API key 或完整 Provider body。
         /// 缺省（旧版本写入的行）反序列化为 0/None，不报错。
         #[serde(default, skip_serializing_if = "Option::is_none")]

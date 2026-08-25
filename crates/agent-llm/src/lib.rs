@@ -31,7 +31,7 @@ use agent_error::{other, Result};
 ///
 /// 引用块必须在进入适配器前由运行时从 BlobStore 物化为 `Image`/`File` 块。
 /// 把引用降级为占位文本后继续请求会静默丢图——这是验收失败，必须返回类型化
-/// 错误（docs/multimodal-attachments §6.3）。各协议适配器在最终序列化前调用。
+/// 错误（docs/archive/implementation/multimodal-attachments-and-deepseek-plan-anchoring-implementation.md §6.3）。各协议适配器在最终序列化前调用。
 pub fn assert_no_unresolved_attachments(messages: &[Message]) -> Result<()> {
     for message in messages {
         for block in &message.content {

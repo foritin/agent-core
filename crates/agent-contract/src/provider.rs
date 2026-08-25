@@ -274,7 +274,7 @@ impl Capabilities {
     }
 }
 
-/// 多模态模型的确定性视觉 token 预算 profile（docs/multimodal-attachments §6.2）。
+/// 多模态模型的确定性视觉 token 预算 profile（docs/archive/implementation/multimodal-attachments-and-deepseek-plan-anchoring-implementation.md §6.2）。
 ///
 /// 目录中 `vision=true` 的模型必须携带一个 profile；缺失时宿主返回
 /// `VISION_BUDGET_PROFILE_MISSING`，不得回退到 Base64 字符估算或 OCR。
