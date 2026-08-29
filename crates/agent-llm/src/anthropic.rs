@@ -241,7 +241,7 @@ impl AnthropicProvider {
     async fn do_complete(&self, request: Arc<CompletionRequest>) -> Result<CompletionResponse> {
         let request = request.as_ref();
         crate::assert_no_unresolved_attachments(&request.messages)?;
-        let body = self.build_request_body(&request);
+        let body = self.build_request_body(request);
         let resp = self.send_with_retry(&body).await?;
 
         let v: Value = resp.json().await.map_err(|e| {
@@ -260,7 +260,7 @@ impl AnthropicProvider {
     ) -> Result<futures::stream::BoxStream<'static, StreamEvent>> {
         let request = request.as_ref();
         crate::assert_no_unresolved_attachments(&request.messages)?;
-        let mut body = self.build_request_body(&request);
+        let mut body = self.build_request_body(request);
         body["stream"] = json!(true);
         let resp = self.send_with_retry(&body).await?;
 

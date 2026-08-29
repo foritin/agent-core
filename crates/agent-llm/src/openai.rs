@@ -355,7 +355,7 @@ impl LlmProvider for OpenAiProvider {
     async fn complete(&self, request: Arc<CompletionRequest>) -> Result<CompletionResponse> {
         let request = request.as_ref();
         crate::assert_no_unresolved_attachments(&request.messages)?;
-        let body = self.build_body(&request, false);
+        let body = self.build_body(request, false);
         let resp =
             send_with_retry(&self.client, &self.completions_url(), &self.api_key, &body).await?;
         let v: Value = resp
@@ -371,7 +371,7 @@ impl LlmProvider for OpenAiProvider {
     ) -> Result<futures::stream::BoxStream<'static, StreamEvent>> {
         let request = request.as_ref();
         crate::assert_no_unresolved_attachments(&request.messages)?;
-        let mut body = self.build_body(&request, true);
+        let mut body = self.build_body(request, true);
         let resp = match send_with_retry(
             &self.client,
             &self.completions_url(),

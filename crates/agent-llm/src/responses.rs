@@ -283,7 +283,7 @@ impl LlmProvider for ResponsesProvider {
     async fn complete(&self, request: Arc<CompletionRequest>) -> Result<CompletionResponse> {
         let request = request.as_ref();
         crate::assert_no_unresolved_attachments(&request.messages)?;
-        let body = self.build_body(&request, false);
+        let body = self.build_body(request, false);
         let resp = crate::openai::send_with_retry(
             &self.client,
             &self.responses_url(),
