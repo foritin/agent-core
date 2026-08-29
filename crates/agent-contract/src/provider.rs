@@ -4,6 +4,8 @@
 //! trait 定义在 `agent-contract`，具体实现（Anthropic / OpenAI / DeepSeek / Mock）
 //! 在 `agent-llm` crate 中。
 
+use std::sync::Arc;
+
 use crate::message::{ContentBlock, Message};
 use crate::tool_host::ToolSpec;
 use crate::usage::Usage;
@@ -15,11 +17,16 @@ use serde_json::Value;
 /// 统一 LLM Provider 抽象。
 #[async_trait::async_trait]
 pub trait LlmProvider: Send + Sync {
-    /// 非流式完成。
-    async fn complete(&self, request: CompletionRequest) -> Result<CompletionResponse>;
+    /// 非流式完成。请求经 `Arc` 共享：P1-E 流中断重放复用同一冻结请求，
+    /// 克隆只是 Arc 计数，避免 `messages`/`tools` 深拷贝（F-perf-02）。
+    async fn complete(&self, request: Arc<CompletionRequest>) -> Result<CompletionResponse>;
 
-    /// 流式完成，返回事件流。
-    async fn stream(&self, request: CompletionRequest) -> Result<BoxStream<'static, StreamEvent>>;
+    /// 流式完成，返回事件流。同 [`Self::complete`]：`Arc` 共享冻结请求，
+    /// 重试循环不再整份深克隆。
+    async fn stream(
+        &self,
+        request: Arc<CompletionRequest>,
+    ) -> Result<BoxStream<'static, StreamEvent>>;
 
     /// 声明能力。
     fn capabilities(&self) -> Capabilities;

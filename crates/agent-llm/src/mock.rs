@@ -9,6 +9,7 @@ use agent_contract::{
     StreamEvent, Usage,
 };
 use agent_error::{Error, Result};
+use std::sync::Arc;
 use std::sync::Mutex;
 
 /// 一个可脚本化的回放单元：一组事件 + 可选错误。
@@ -121,7 +122,7 @@ pub fn aggregate(events: &[StreamEvent]) -> CompletionResponse {
 
 #[async_trait::async_trait]
 impl LlmProvider for MockProvider {
-    async fn complete(&self, _request: CompletionRequest) -> Result<CompletionResponse> {
+    async fn complete(&self, _request: Arc<CompletionRequest>) -> Result<CompletionResponse> {
         let turn = self.next_turn()?;
         if let Some(err) = turn.error {
             return Err(err);
@@ -131,7 +132,7 @@ impl LlmProvider for MockProvider {
 
     async fn stream(
         &self,
-        _request: CompletionRequest,
+        _request: Arc<CompletionRequest>,
     ) -> Result<futures::stream::BoxStream<'static, StreamEvent>> {
         let turn = self.next_turn()?;
         if let Some(err) = turn.error {
@@ -191,7 +192,7 @@ mod tests {
     async fn complete_aggregates_text() {
         let p = MockProvider::new("mock");
         p.push_text_turn("hello", Usage::new(10, 5));
-        let resp = p.complete(req()).await.unwrap();
+        let resp = p.complete(Arc::new(req())).await.unwrap();
         assert_eq!(resp.text(), "hello");
         assert_eq!(resp.usage.input_tokens, 10);
         assert_eq!(resp.stop_reason, StopReason::EndTurn);
@@ -217,7 +218,7 @@ mod tests {
             },
         ]));
 
-        let mut s = p.stream(req()).await.unwrap();
+        let mut s = p.stream(Arc::new(req())).await.unwrap();
         use futures::StreamExt;
         let mut kinds = Vec::new();
         while let Some(ev) = s.next().await {
@@ -231,7 +232,11 @@ mod tests {
         // V-PROV-02：错误带可展示分类，不含 api_key
         let p = MockProvider::new("mock");
         p.push_error_turn(Error::AuthFailed("authentication failed".into()));
-        let err = p.stream(req()).await.err().expect("expected error");
+        let err = p
+            .stream(Arc::new(req()))
+            .await
+            .err()
+            .expect("expected error");
         let msg = err.to_string();
         assert!(!msg.contains("sk-ant-"));
         assert!(!msg.contains("secret"));
@@ -240,7 +245,7 @@ mod tests {
     #[tokio::test]
     async fn exhausted_turns_returns_internal_error() {
         let p = MockProvider::new("mock");
-        let err = p.complete(req()).await.unwrap_err();
+        let err = p.complete(Arc::new(req())).await.unwrap_err();
         assert!(matches!(err, Error::Internal(_)));
     }
 }

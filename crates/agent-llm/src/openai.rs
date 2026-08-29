@@ -4,6 +4,7 @@
 //! caching。错误信息不含 api_key。
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use std::time::Duration;
 
 use agent_contract::{
@@ -351,7 +352,8 @@ fn openrouter_server_tool(
 
 #[async_trait::async_trait]
 impl LlmProvider for OpenAiProvider {
-    async fn complete(&self, request: CompletionRequest) -> Result<CompletionResponse> {
+    async fn complete(&self, request: Arc<CompletionRequest>) -> Result<CompletionResponse> {
+        let request = request.as_ref();
         crate::assert_no_unresolved_attachments(&request.messages)?;
         let body = self.build_body(&request, false);
         let resp =
@@ -365,8 +367,9 @@ impl LlmProvider for OpenAiProvider {
 
     async fn stream(
         &self,
-        request: CompletionRequest,
+        request: Arc<CompletionRequest>,
     ) -> Result<futures::stream::BoxStream<'static, StreamEvent>> {
+        let request = request.as_ref();
         crate::assert_no_unresolved_attachments(&request.messages)?;
         let mut body = self.build_body(&request, true);
         let resp = match send_with_retry(
@@ -2579,7 +2582,10 @@ mod tests {
 
         let p = OpenAiProvider::new("k".into(), "m".into(), format!("http://{addr}"));
         let req = tool_round_request("m", vec![Message::user_text("hello")]);
-        let resp = p.complete(req).await.expect("retry should succeed");
+        let resp = p
+            .complete(Arc::new(req))
+            .await
+            .expect("retry should succeed");
         assert_eq!(resp.text(), "hi");
 
         let recorded = bodies.lock().unwrap();
@@ -2617,7 +2623,7 @@ mod tests {
 
         let p = OpenAiProvider::new("k".into(), "m".into(), format!("http://{addr}"));
         let req = tool_round_request("m", vec![Message::user_text("hello")]);
-        let err = p.complete(req).await.expect_err("400 must fail");
+        let err = p.complete(Arc::new(req)).await.expect_err("400 must fail");
         match &err {
             Error::ApiError { status: 400, .. } => {}
             other => panic!("expected ApiError 400, got {other}"),

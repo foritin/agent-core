@@ -27,6 +27,7 @@ use agent_contract::{
 use agent_error::{Error, Result};
 use serde_json::{json, Value};
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use crate::openai::normalize_api_error;
@@ -279,7 +280,8 @@ impl ResponsesProvider {
 
 #[async_trait::async_trait]
 impl LlmProvider for ResponsesProvider {
-    async fn complete(&self, request: CompletionRequest) -> Result<CompletionResponse> {
+    async fn complete(&self, request: Arc<CompletionRequest>) -> Result<CompletionResponse> {
+        let request = request.as_ref();
         crate::assert_no_unresolved_attachments(&request.messages)?;
         let body = self.build_body(&request, false);
         let resp = crate::openai::send_with_retry(
@@ -298,7 +300,7 @@ impl LlmProvider for ResponsesProvider {
 
     async fn stream(
         &self,
-        request: CompletionRequest,
+        request: Arc<CompletionRequest>,
     ) -> Result<futures::stream::BoxStream<'static, StreamEvent>> {
         crate::assert_no_unresolved_attachments(&request.messages)?;
         let body = self.build_body(&request, true);

@@ -140,7 +140,7 @@ fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
         .position(|window| window == needle)
 }
 
-fn request(model: &str, append_tail: bool) -> CompletionRequest {
+fn request(model: &str, append_tail: bool) -> Arc<CompletionRequest> {
     let mut messages = vec![Message::user_text(format!(
         "{STABLE_PREFIX}. Explain the cache result briefly."
     ))];
@@ -149,7 +149,7 @@ fn request(model: &str, append_tail: bool) -> CompletionRequest {
             "new tail that must not alter the earlier prefix",
         ));
     }
-    CompletionRequest {
+    Arc::new(CompletionRequest {
         model: model.to_string(),
         system: Some(STABLE_PREFIX.to_string()),
         messages,
@@ -159,10 +159,10 @@ fn request(model: &str, append_tail: bool) -> CompletionRequest {
         temperature: None,
         enable_caching: true,
         inference: Default::default(),
-    }
+    })
 }
 
-async fn collect_usage(provider: &dyn LlmProvider, request: CompletionRequest) -> Vec<Usage> {
+async fn collect_usage(provider: &dyn LlmProvider, request: Arc<CompletionRequest>) -> Vec<Usage> {
     let mut stream = provider.stream(request).await.unwrap();
     let mut usage = Vec::new();
     while let Some(event) = stream.next().await {

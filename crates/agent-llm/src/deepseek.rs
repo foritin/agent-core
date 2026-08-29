@@ -7,6 +7,7 @@ use agent_contract::{
     Capabilities, CompletionRequest, CompletionResponse, LlmProvider, StreamEvent,
 };
 use agent_error::Result;
+use std::sync::Arc;
 
 const DEEPSEEK_BASE_URL: &str = "https://api.deepseek.com";
 
@@ -57,13 +58,13 @@ impl DeepSeekProvider {
 
 #[async_trait::async_trait]
 impl LlmProvider for DeepSeekProvider {
-    async fn complete(&self, request: CompletionRequest) -> Result<CompletionResponse> {
+    async fn complete(&self, request: Arc<CompletionRequest>) -> Result<CompletionResponse> {
         self.inner.complete(request).await
     }
 
     async fn stream(
         &self,
-        request: CompletionRequest,
+        request: Arc<CompletionRequest>,
     ) -> Result<futures::stream::BoxStream<'static, StreamEvent>> {
         self.inner.stream(request).await
     }

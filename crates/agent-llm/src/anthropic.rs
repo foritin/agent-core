@@ -9,6 +9,7 @@ use agent_contract::{
 };
 use agent_error::{Error, Result};
 use serde_json::{json, Value};
+use std::sync::Arc;
 use std::time::Duration;
 
 use crate::dialect::{dialect_thinking_value, EffortWire, WireDialect};
@@ -237,7 +238,8 @@ impl AnthropicProvider {
     }
 
     /// 非流式完成。
-    async fn do_complete(&self, request: CompletionRequest) -> Result<CompletionResponse> {
+    async fn do_complete(&self, request: Arc<CompletionRequest>) -> Result<CompletionResponse> {
+        let request = request.as_ref();
         crate::assert_no_unresolved_attachments(&request.messages)?;
         let body = self.build_request_body(&request);
         let resp = self.send_with_retry(&body).await?;
@@ -254,8 +256,9 @@ impl AnthropicProvider {
     /// 流式完成（SSE）。
     async fn do_stream(
         &self,
-        request: CompletionRequest,
+        request: Arc<CompletionRequest>,
     ) -> Result<futures::stream::BoxStream<'static, StreamEvent>> {
+        let request = request.as_ref();
         crate::assert_no_unresolved_attachments(&request.messages)?;
         let mut body = self.build_request_body(&request);
         body["stream"] = json!(true);
@@ -389,13 +392,13 @@ fn anthropic_web_tool(
 
 #[async_trait::async_trait]
 impl LlmProvider for AnthropicProvider {
-    async fn complete(&self, request: CompletionRequest) -> Result<CompletionResponse> {
+    async fn complete(&self, request: Arc<CompletionRequest>) -> Result<CompletionResponse> {
         self.do_complete(request).await
     }
 
     async fn stream(
         &self,
-        request: CompletionRequest,
+        request: Arc<CompletionRequest>,
     ) -> Result<futures::stream::BoxStream<'static, StreamEvent>> {
         self.do_stream(request).await
     }
@@ -2031,7 +2034,7 @@ mod tests {
         .expect("construct provider");
 
         let response = provider
-            .complete(test_completion_request())
+            .complete(Arc::new(test_completion_request()))
             .await
             .expect("transient failures should recover");
         let bodies = server.await.expect("retry fixture must finish");
@@ -2059,7 +2062,7 @@ mod tests {
                 .expect("construct provider");
 
         let error = provider
-            .complete(test_completion_request())
+            .complete(Arc::new(test_completion_request()))
             .await
             .expect_err("HTTP 500 must fail");
         server.await.expect("HTTP fixture must finish");
@@ -2092,7 +2095,7 @@ mod tests {
         .expect("construct provider");
 
         let error = provider
-            .complete(test_completion_request())
+            .complete(Arc::new(test_completion_request()))
             .await
             .expect_err("invalid JSON must fail");
         server.await.expect("HTTP fixture must finish");
@@ -2116,7 +2119,7 @@ mod tests {
         .expect("construct provider");
 
         let error = provider
-            .complete(test_completion_request())
+            .complete(Arc::new(test_completion_request()))
             .await
             .expect_err("disconnected transport must fail");
         server.await.expect("disconnect fixture must finish");

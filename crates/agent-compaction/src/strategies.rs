@@ -15,12 +15,12 @@ pub struct NoopProvider;
 
 #[async_trait::async_trait]
 impl LlmProvider for NoopProvider {
-    async fn complete(&self, _: CompletionRequest) -> Result<CompletionResponse> {
+    async fn complete(&self, _: Arc<CompletionRequest>) -> Result<CompletionResponse> {
         Err(Error::NotImplemented("noop provider".into()))
     }
     async fn stream(
         &self,
-        _: CompletionRequest,
+        _: Arc<CompletionRequest>,
     ) -> Result<futures::stream::BoxStream<'static, StreamEvent>> {
         Err(Error::NotImplemented("noop provider".into()))
     }
@@ -161,7 +161,7 @@ causes, and unfinished work. Do not invent facts. Return only the checkpoint.\n\
 
         let response = self
             .provider
-            .complete(CompletionRequest {
+            .complete(Arc::new(CompletionRequest {
                 model: session.meta.model.clone(),
                 system: Some("You are a conversation summarizer.".into()),
                 messages: vec![Message::user_text(summary_prompt)],
@@ -171,7 +171,7 @@ causes, and unfinished work. Do not invent facts. Return only the checkpoint.\n\
                 temperature: Some(0.3),
                 enable_caching: false,
                 inference: Default::default(),
-            })
+            }))
             .await?;
 
         if response.stop_reason == StopReason::MaxTokens {
@@ -273,9 +273,9 @@ mod tests {
 
     #[async_trait]
     impl LlmProvider for DummyProvider {
-        async fn complete(&self, request: CompletionRequest) -> Result<CompletionResponse> {
+        async fn complete(&self, request: Arc<CompletionRequest>) -> Result<CompletionResponse> {
             if let Some(requests) = &self.requests {
-                requests.lock().unwrap().push(request);
+                requests.lock().unwrap().push(request.as_ref().clone());
             }
             Ok(CompletionResponse {
                 content: vec![ContentBlock::Text {
@@ -288,7 +288,7 @@ mod tests {
 
         async fn stream(
             &self,
-            _request: CompletionRequest,
+            _request: Arc<CompletionRequest>,
         ) -> Result<futures::stream::BoxStream<'static, StreamEvent>> {
             Err(Error::NotImplemented("dummy stream".into()))
         }

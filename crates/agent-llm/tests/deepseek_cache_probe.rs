@@ -12,6 +12,7 @@
 //! 预期：第 1 轮冷启动全 miss（hit=0）；第 2 轮起前缀命中，命中率随轮次增长
 //! 趋近 90%+（对照 https://github.com/foritin/r-code/blob/main/docs/archive/deepseek-cache-baseline.md 的 80.5% 第二轮基线）。
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use agent_contract::{
@@ -53,7 +54,7 @@ async fn deepseek_prefix_cache_hit_curve() {
     let mut curve: Vec<(u32, u32, f32)> = Vec::new();
 
     for round in 0..ROUNDS {
-        let request = CompletionRequest {
+        let request = Arc::new(CompletionRequest {
             model: "deepseek-chat".into(),
             system: Some(STABLE_SYSTEM.to_string()),
             messages: messages.clone(),
@@ -63,7 +64,7 @@ async fn deepseek_prefix_cache_hit_curve() {
             temperature: None,
             enable_caching: false,
             inference: Default::default(),
-        };
+        });
 
         let mut stream = provider
             .stream(request)
@@ -131,8 +132,8 @@ fn live_api_key() -> Option<String> {
     }
 }
 
-fn protocol_probe_request(model: &str) -> CompletionRequest {
-    CompletionRequest {
+fn protocol_probe_request(model: &str) -> Arc<CompletionRequest> {
+    Arc::new(CompletionRequest {
         model: model.to_string(),
         system: Some(STABLE_SYSTEM.to_string()),
         messages: vec![Message::user_text(
@@ -144,7 +145,7 @@ fn protocol_probe_request(model: &str) -> CompletionRequest {
         temperature: None,
         enable_caching: true,
         inference: Default::default(),
-    }
+    })
 }
 
 fn merge_usage(aggregate: &mut Usage, update: Usage) {
