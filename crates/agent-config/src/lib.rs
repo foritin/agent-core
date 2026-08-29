@@ -51,6 +51,19 @@ pub struct Config {
 
     #[serde(default)]
     pub tauri: Option<TauriConfig>,
+
+    /// 配置 schema 版本（FX-12）。缺失（旧文件）= 1，向后兼容；
+    /// 宿主加载后对「未来版本」显式拒绝，配合 serde default 防止旧字段
+    /// 被静默吞掉而无人察觉。
+    #[serde(default = "default_schema_version")]
+    pub schema_version: u32,
+}
+
+/// 配置 schema 当前版本。缺失字段的旧配置反序列化到该值。
+pub const CONFIG_SCHEMA_VERSION: u32 = 1;
+
+fn default_schema_version() -> u32 {
+    CONFIG_SCHEMA_VERSION
 }
 
 /// 图片理解引擎选择（docs/archive/implementation/settings-ux-and-image-understanding.md D2）。
@@ -685,6 +698,7 @@ impl Default for Config {
             diagnostics: DiagnosticsConfig::default(),
             image_understanding: ImageUnderstandingConfig::default(),
             tauri: None,
+            schema_version: default_schema_version(),
         }
     }
 }

@@ -147,6 +147,7 @@ mod tests {
             diagnostics: Default::default(),
             image_understanding: Default::default(),
             tauri: None,
+            schema_version: agent_config::CONFIG_SCHEMA_VERSION,
         }
     }
 
