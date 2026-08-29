@@ -144,7 +144,9 @@ pub fn create_provider(config: ProviderConfig) -> Result<Box<dyn LlmProvider>> {
             base_url,
         } => {
             let dialect = dialect_for("kimi_coding", &model, DialectPort::AnthropicMessages)
-                .unwrap_or_else(|| unreachable!("kimi_coding dialect must resolve"));
+                .ok_or(other(
+                    "kimi_coding anthropic dialect not supported for this model",
+                ))?;
             Ok(Box::new(
                 AnthropicProvider::new_kimi_coding(api_key, model, base_url)?.with_dialect(dialect),
             ))
@@ -155,8 +157,10 @@ pub fn create_provider(config: ProviderConfig) -> Result<Box<dyn LlmProvider>> {
             base_url,
             kind,
         } => {
-            let dialect = dialect_for(&kind, &model, DialectPort::AnthropicMessages)
-                .unwrap_or_else(|| unreachable!("{kind} anthropic dialect must resolve"));
+            let dialect =
+                dialect_for(&kind, &model, DialectPort::AnthropicMessages).ok_or(other(
+                    format!("{kind} anthropic dialect not supported for this model"),
+                ))?;
             Ok(Box::new(
                 AnthropicProvider::new(api_key, model, base_url)?.with_dialect(dialect),
             ))
@@ -167,8 +171,9 @@ pub fn create_provider(config: ProviderConfig) -> Result<Box<dyn LlmProvider>> {
             base_url,
             kind,
         } => {
-            let dialect = dialect_for(&kind, &model, DialectPort::OpenAiChat)
-                .unwrap_or_else(|| unreachable!("{kind} chat dialect must resolve"));
+            let dialect = dialect_for(&kind, &model, DialectPort::OpenAiChat).ok_or(other(
+                format!("{kind} openai-chat dialect not supported for this model"),
+            ))?;
             Ok(Box::new(
                 OpenAiProvider::new(api_key, model, base_url).with_dialect(dialect),
             ))
@@ -178,8 +183,9 @@ pub fn create_provider(config: ProviderConfig) -> Result<Box<dyn LlmProvider>> {
             model,
             base_url,
         } => {
-            let dialect = dialect_for("kimi_coding", &model, DialectPort::OpenAiChat)
-                .unwrap_or_else(|| unreachable!("kimi_coding chat dialect must resolve"));
+            let dialect = dialect_for("kimi_coding", &model, DialectPort::OpenAiChat).ok_or(
+                other("kimi_coding openai-chat dialect not supported for this model"),
+            )?;
             Ok(Box::new(
                 OpenAiProvider::new(api_key, model, base_url).with_dialect(dialect),
             ))
@@ -351,5 +357,25 @@ mod tests {
             256_000
         );
         assert!(ark_coding_responses.capabilities().supports_vision);
+    }
+
+    /// F-corr-05：dialect 不支持的 provider kind 走可读错误而非
+    /// `unreachable!` panic（用户配置该类服务时不再使宿主崩溃）。
+    #[test]
+    fn unsupported_provider_kind_returns_error_instead_of_panicking() {
+        let result = create_provider(ProviderConfig::ArkAnthropic {
+            api_key: "k".into(),
+            model: "m".into(),
+            base_url: Some("https://example.invalid".into()),
+            kind: "not_a_real_kind".into(),
+        });
+        let error = match result {
+            Ok(_) => panic!("unsupported kind must not construct a provider"),
+            Err(error) => error.to_string(),
+        };
+        assert!(
+            error.contains("dialect not supported"),
+            "dialect error expected, got: {error}"
+        );
     }
 }

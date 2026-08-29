@@ -101,7 +101,17 @@ impl JsonRpcResponse {
 
 /// 写一帧（4B 长度头 + payload）。
 pub async fn write_frame<W: AsyncWrite + Unpin>(writer: &mut W, payload: &[u8]) -> Result<()> {
-    let len = payload.len() as u32;
+    // F-corr-08：写侧与读侧同一帧大小上限，且对超长 payload 显式报错——
+    // 旧代码 `payload.len() as u32` 会静默截断超大帧（读侧兜底只在
+    // 对端能读到正确的被截断长度时成立；这里直接拒绝，绝不让坏帧上线路）。
+    if payload.len() > 16 * 1024 * 1024 {
+        return Err(Error::Ipc(format!(
+            "frame too large on write: {} bytes (cap 16MiB)",
+            payload.len()
+        )));
+    }
+    let len = u32::try_from(payload.len())
+        .map_err(|_| Error::Ipc("frame length overflowed u32".to_string()))?;
     writer.write_all(&len.to_be_bytes()).await?;
     writer.write_all(payload).await?;
     writer.flush().await?;
@@ -152,6 +162,20 @@ mod tests {
         let mut cursor = std::io::Cursor::new(buf);
         let got = read_frame(&mut cursor).await.unwrap();
         assert_eq!(got, payload);
+    }
+
+    #[tokio::test]
+    async fn write_frame_rejects_oversized_payload_explicitly() {
+        // F-corr-08：写侧不得静默截断超过 16MiB 的帧，必须显式报错。
+        let mut buf = Vec::new();
+        let oversized = vec![0u8; 16 * 1024 * 1024 + 1];
+        let result = write_frame(&mut buf, &oversized).await;
+        assert!(result.is_err(), "oversized frame write must fail");
+        let message = format!("{}", result.unwrap_err());
+        assert!(
+            message.contains("frame too large on write"),
+            "got {message}"
+        );
     }
 
     #[test]

@@ -34,11 +34,19 @@ fn is_durable_user_message_cancel_event(event: &str) -> bool {
     event == DURABLE_USER_MESSAGE_CANCEL_EVENT || event == LEGACY_DURABLE_USER_MESSAGE_CANCEL_EVENT
 }
 
+/// 扩容阈值：超过该数才做一次全表 retain 清理（F-perf-05）。此前每次 append
+/// 都全表扫描，热路径（每事件一次）在会话较多时会互相放大。
+const APPEND_LOCK_RETAIN_THRESHOLD: usize = 256;
+
 fn append_lock_for(path: &Path) -> Arc<SessionAppendLock> {
     static LOCKS: OnceLock<Mutex<HashMap<PathBuf, Weak<SessionAppendLock>>>> = OnceLock::new();
     let locks = LOCKS.get_or_init(|| Mutex::new(HashMap::new()));
     let mut locks = locks.lock().expect("session append lock registry poisoned");
-    locks.retain(|_, lock| lock.strong_count() > 0);
+    // 只在注册表膨胀到阈值时清扫一次死锁（strong_count == 0）。
+    // 懒清理由容量驱动，避免每次 append 付 O(活跃会话数) 的 retain。
+    if locks.len() >= APPEND_LOCK_RETAIN_THRESHOLD {
+        locks.retain(|_, lock| lock.strong_count() > 0);
+    }
     if let Some(lock) = locks.get(path).and_then(Weak::upgrade) {
         return lock;
     }

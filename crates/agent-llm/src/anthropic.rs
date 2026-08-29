@@ -261,7 +261,13 @@ impl AnthropicProvider {
         body["stream"] = json!(true);
         let resp = self.send_with_retry(&body).await?;
 
-        let byte_stream = resp.bytes_stream();
+        // F-robust-04：与 openai 线路共享同一 SSE 空闲 watchdog。半开连接
+        //（网关停发 body）在 DEFAULT_STREAM_IDLE_TIMEOUT 内无新字节即终止，
+        // 否则只靠 agent_loop 的 10 分钟兜底，单故障窗口过长。
+        let byte_stream = crate::openai::watch_sse_idle(
+            resp.bytes_stream(),
+            crate::openai::DEFAULT_STREAM_IDLE_TIMEOUT,
+        );
         let stream = parse_sse_stream(
             byte_stream,
             self.deepseek_automatic_cache,
@@ -832,14 +838,16 @@ fn secret_token_len(value: &str) -> usize {
 }
 
 /// 网络错误信息必须使用当前 provider 的真实 key 脱敏。
-fn sanitize_http_err(e: &reqwest::Error, api_key: &str) -> String {
+fn sanitize_http_err<E: std::fmt::Display>(e: &E, api_key: &str) -> String {
     sanitize_error_text(&e.to_string(), api_key)
 }
 
 // ── SSE 流解析 ────────────────────────────────────────────────
 
 fn parse_sse_stream(
-    byte_stream: impl futures::Stream<Item = std::result::Result<bytes::Bytes, reqwest::Error>>,
+    byte_stream: impl futures::Stream<
+        Item = std::result::Result<bytes::Bytes, crate::openai::SseChunkError>,
+    >,
     deepseek_automatic_cache: bool,
     api_key: String,
 ) -> impl futures::Stream<Item = StreamEvent> {
@@ -1536,8 +1544,8 @@ mod tests {
         let split = frame.find('你').expect("Chinese text is present") + 1;
         let bytes = frame.as_bytes();
         let chunks = futures::stream::iter(vec![
-            Ok::<_, reqwest::Error>(bytes::Bytes::copy_from_slice(&bytes[..split])),
-            Ok::<_, reqwest::Error>(bytes::Bytes::copy_from_slice(&bytes[split..])),
+            Ok::<_, crate::openai::SseChunkError>(bytes::Bytes::copy_from_slice(&bytes[..split])),
+            Ok::<_, crate::openai::SseChunkError>(bytes::Bytes::copy_from_slice(&bytes[split..])),
         ]);
 
         let events = parse_sse_stream(chunks, false, String::new())

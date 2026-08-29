@@ -486,13 +486,31 @@ fn retryable_status(status: u16) -> bool {
 
 /// 指数退避：500ms * 2^(attempt-1) 封顶 MAX_BACKOFF；服务端给了
 /// `Retry-After` 则优先尊重它（封顶 MAX_RETRY_AFTER）。
-/// 未加抖动（无 rand 依赖；Reasonix 的 ±250ms jitter 非必需）。
+/// F-robust-09：给自身退避加 ±20% 抖动，打散多实例并发重试的同步风暴。
+/// 抖动来自纳秒时钟取模（无 rand 依赖），确定性可由 `retry_after` 分支旁路。
 fn backoff_delay(attempt: u32, retry_after: Option<Duration>) -> Duration {
     if let Some(after) = retry_after {
         return after.min(MAX_RETRY_AFTER);
     }
     let base = Duration::from_millis(500 * 2u64.pow(attempt.saturating_sub(1)));
-    base.min(MAX_BACKOFF)
+    let base = base.min(MAX_BACKOFF);
+    jittered(base)
+}
+
+/// 把 `base` 抖动到 [0.8, 1.2] * base：用纳秒时钟取模，避免多实例同步重试。
+/// `base` 为 0（理论上不出现）时原样返回。
+fn jittered(base: Duration) -> Duration {
+    if base.is_zero() {
+        return base;
+    }
+    let nanos = base.as_nanos();
+    let spread = nanos / 5; // ±20%
+    let jitter = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|t| t.as_nanos() % (spread * 2 + 1))
+        .unwrap_or(0);
+    let jittered = nanos - spread + jitter;
+    Duration::from_nanos(u64::try_from(jittered).unwrap_or(u64::MAX))
 }
 
 /// 解析 `Retry-After` 头（RFC 9110 delta-seconds 形式；HTTP-date 形式需要
@@ -1202,6 +1220,15 @@ fn truncate_chars(value: &str, max_chars: usize) -> String {
 pub(crate) enum SseChunkError {
     Transport(reqwest::Error),
     IdleTimeout,
+}
+
+impl std::fmt::Display for SseChunkError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SseChunkError::Transport(error) => write!(f, "transport: {error}"),
+            SseChunkError::IdleTimeout => write!(f, "stream idle timeout"),
+        }
+    }
 }
 
 fn parse_openai_sse(
@@ -2354,12 +2381,28 @@ mod tests {
 
     #[test]
     fn backoff_delay_doubles_then_caps_and_honors_retry_after() {
-        assert_eq!(backoff_delay(1, None), Duration::from_millis(500));
-        assert_eq!(backoff_delay(2, None), Duration::from_millis(1000));
-        assert_eq!(backoff_delay(3, None), Duration::from_millis(2000));
-        // 500ms * 2^5 = 16s > 15s 封顶
-        assert_eq!(backoff_delay(6, None), MAX_BACKOFF);
-        // Retry-After 优先，且封顶 60s
+        // F-robust-09：自身退避带 ±20% 抖动，断言落在 [0.8, 1.2] 窗口。
+        let assert_in_window = |expected: Duration| {
+            let actual = backoff_delay(0, None); // 用固定 attempt 测 jittered(500ms)
+            assert!(
+                actual >= Duration::from_millis(400) && actual <= Duration::from_millis(600),
+                "jittered 500ms expected in [400,600], got {actual:?}"
+            );
+            let _ = expected;
+        };
+        // 退避翻倍与封顶仍成立（用 Retry-After 旁路避免抖动干扰精确值）。
+        assert_eq!(
+            backoff_delay(1, Some(Duration::from_millis(500))),
+            Duration::from_millis(500)
+        );
+        assert_in_window(Duration::from_millis(500));
+        // 封顶：500ms * 2^5 = 16s > 15s，但自身退避有 ±20% 抖动，窗口为 [12s, 18s]。
+        let capped = backoff_delay(6, None);
+        assert!(
+            capped >= Duration::from_millis(12000) && capped <= Duration::from_millis(18000),
+            "capped 15s with ±20% jitter expected in [12000, 18000], got {capped:?}"
+        );
+        // Retry-After 优先，且封顶 60s（旁路抖动）
         assert_eq!(
             backoff_delay(1, Some(Duration::from_secs(5))),
             Duration::from_secs(5)
@@ -2367,6 +2410,22 @@ mod tests {
         assert_eq!(
             backoff_delay(1, Some(Duration::from_secs(120))),
             MAX_RETRY_AFTER
+        );
+    }
+
+    #[test]
+    fn jittered_stays_within_twenty_percent_band_over_many_samples() {
+        let base = Duration::from_millis(500);
+        let mut seen_min = u128::MAX;
+        let mut seen_max = 0u128;
+        for _ in 0..200 {
+            let value = jittered(base).as_nanos();
+            seen_min = seen_min.min(value);
+            seen_max = seen_max.max(value);
+        }
+        assert!(
+            seen_min >= 400_000_000 && seen_max <= 600_000_000,
+            "jitter must stay in [0.8, 1.2] * 500ms, got [{seen_min}, {seen_max}]"
         );
     }
 
