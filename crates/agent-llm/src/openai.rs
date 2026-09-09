@@ -1238,7 +1238,10 @@ fn parse_openai_sse(
     byte_stream: impl futures::Stream<Item = std::result::Result<bytes::Bytes, SseChunkError>>,
 ) -> impl futures::Stream<Item = StreamEvent> {
     use futures::StreamExt;
-    let mut buffer = String::new();
+    // 字节缓冲：SSE 行必须先按 \n 切出完整行、再做 UTF-8 解码。逐 chunk
+    // from_utf8_lossy 会把被 TCP 分片从字节中间切开的多字节字符（如顿号、
+    // emoji）变成 U+FFFD——损坏随工具入参/正文永久入库（2026-09 实测）。
+    let mut buffer: Vec<u8> = Vec::new();
     let mut tool_args: std::collections::HashMap<u32, (String, String)> =
         std::collections::HashMap::new();
     let mut stopped = false;
@@ -1266,11 +1269,17 @@ fn parse_openai_sse(
                     return Vec::new();
                 }
             };
-            buffer.push_str(&String::from_utf8_lossy(&chunk));
+            buffer.extend_from_slice(&chunk);
             let mut events = Vec::new();
-            while let Some(pos) = buffer.find('\n') {
-                let line: String = buffer.drain(..pos + 1).collect();
-                let line = line.trim();
+            while let Some(pos) = buffer.iter().position(|&byte| byte == b'\n') {
+                let line_bytes: Vec<u8> = buffer.drain(..pos + 1).collect();
+                // 先按 \n 切出完整行再做 UTF-8 解码（同 responses::parse_responses_sse）。
+                // 本就非法的坏流仍降级 lossy 保健壮性。
+                let line_text = match std::str::from_utf8(&line_bytes) {
+                    Ok(text) => text.to_string(),
+                    Err(_) => String::from_utf8_lossy(&line_bytes).into_owned(),
+                };
+                let line = line_text.trim();
                 if line.is_empty() {
                     continue;
                 }
@@ -2697,5 +2706,41 @@ mod tests {
         assert_eq!(body["thinking"]["type"], "adaptive");
         assert_eq!(body["reasoning_effort"], "high");
         assert_eq!(body["stream_options"]["include_usage"], true);
+    }
+}
+
+#[cfg(test)]
+mod sse_byte_boundary_tests {
+    use super::*;
+    use futures::StreamExt;
+
+    /// 回归（2026-09 实测乱码入库）：TCP 分片把多字节字符从字节中间切开时，
+    /// 必须在完整行边界解码——曾逐 chunk from_utf8_lossy，顿号"、"（E3 80 81）
+    /// 跨界后变成三个 U+FFFD。anthropic.rs 的 SSE 解析早已用字节缓冲修复，
+    /// 本测试把同样的保障锁给 OpenAI 兼容流。
+    #[tokio::test]
+    async fn sse_stream_survives_multibyte_char_split_across_chunks() {
+        let payload = "对齐、docstring";
+        let data =
+            format!("data: {{\"choices\":[{{\"delta\":{{\"content\":\"{payload}\"}}}}]}}\n\n");
+        let bytes = data.as_bytes();
+        let split = bytes
+            .windows(3)
+            .position(|window| window == [0xE3, 0x80, 0x81])
+            .expect("payload must contain the multibyte character")
+            + 1; // 三字节序列的中间切开
+        let stream = futures::stream::iter(vec![
+            Ok::<_, SseChunkError>(bytes::Bytes::copy_from_slice(&bytes[..split])),
+            Ok(bytes::Bytes::copy_from_slice(&bytes[split..])),
+        ]);
+        let events: Vec<StreamEvent> = parse_openai_sse(stream).collect().await;
+        let text: String = events
+            .into_iter()
+            .filter_map(|event| match event {
+                StreamEvent::TextDelta { text } => Some(text),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(text, payload);
     }
 }

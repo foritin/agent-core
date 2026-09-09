@@ -9,6 +9,10 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
 
+pub mod agent_prompts;
+
+pub use agent_prompts::{AgentPromptPolicy, DEFAULT_MAIN_AGENT_PROMPT, DEFAULT_SUBAGENT_PROMPT};
+
 /// 顶层配置。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {

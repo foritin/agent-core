@@ -963,7 +963,8 @@ fn parse_responses_sse(
     reasoning: ReasoningMode,
 ) -> impl futures::Stream<Item = StreamEvent> {
     use futures::StreamExt;
-    let mut buffer = String::new();
+    // 字节缓冲：见 parse_responses_sse 内的行切分注释——SSE 必须按行边界解码。
+    let mut buffer: Vec<u8> = Vec::new();
     let mut state = StreamState {
         deepseek_automatic_cache,
         reasoning,
@@ -987,11 +988,19 @@ fn parse_responses_sse(
                 }
                 Err(crate::openai::SseChunkError::Transport(_)) => return Vec::new(),
             };
-            buffer.push_str(&String::from_utf8_lossy(&chunk));
+            buffer.extend_from_slice(&chunk);
             let mut events = Vec::new();
-            while let Some(pos) = buffer.find('\n') {
-                let line: String = buffer.drain(..pos + 1).collect();
-                let line = line.trim();
+            while let Some(pos) = buffer.iter().position(|&byte| byte == b'\n') {
+                let line_bytes: Vec<u8> = buffer.drain(..pos + 1).collect();
+                // 先按 \n 切出完整行再做 UTF-8 解码：逐 chunk from_utf8_lossy 会把
+                // 被 TCP 分片从字节中间切开的多字节字符（顿号/emoji 等）变成
+                // U+FFFD，损坏随工具入参/正文永久入库（2026-09 实测）。本就非法
+                // 的坏流仍降级 lossy 保健壮性。
+                let line_text = match std::str::from_utf8(&line_bytes) {
+                    Ok(text) => text.to_string(),
+                    Err(_) => String::from_utf8_lossy(&line_bytes).into_owned(),
+                };
+                let line = line_text.trim();
                 if line.is_empty() {
                     continue;
                 }
@@ -1340,6 +1349,7 @@ fn complete_hosted_web_item(item: &Value, state: &mut StreamState, events: &mut 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures::StreamExt;
 
     fn provider(base_url: &str) -> ResponsesProvider {
         ResponsesProvider::new("sk-test".into(), "gpt-5.6-sol".into(), base_url.into())
@@ -2575,5 +2585,37 @@ mod tests {
         let items = message_to_items(&message, ReasoningMode::Drop);
         assert_eq!(items[0]["content"][0]["type"], "input_file");
         assert_eq!(items[0]["content"][0]["filename"], "spec.pdf");
+    }
+
+    /// 回归（2026-09 实测乱码入库）：TCP 分片把多字节字符从字节中间切开时，
+    /// 必须在完整行边界解码——曾逐 chunk from_utf8_lossy，顿号"、"（E3 80 81）
+    /// 跨界后变成三个 U+FFFD 并随 request_user_input 参数写入 Plan 存储。
+    #[tokio::test]
+    async fn sse_stream_survives_multibyte_char_split_across_chunks() {
+        let payload = "对齐、docstring";
+        let data = format!(
+            "data: {{\"type\":\"response.output_text.delta\",\"sequence_number\":1,\"delta\":\"{payload}\"}}\n\n"
+        );
+        let bytes = data.as_bytes();
+        let split = bytes
+            .windows(3)
+            .position(|window| window == [0xE3, 0x80, 0x81])
+            .expect("payload must contain the multibyte character")
+            + 1; // 三字节序列的中间切开
+        let stream = futures::stream::iter(vec![
+            Ok::<_, crate::openai::SseChunkError>(bytes::Bytes::copy_from_slice(&bytes[..split])),
+            Ok(bytes::Bytes::copy_from_slice(&bytes[split..])),
+        ]);
+        let events: Vec<StreamEvent> = parse_responses_sse(stream, false, ReasoningMode::Drop)
+            .collect()
+            .await;
+        let text: String = events
+            .into_iter()
+            .filter_map(|event| match event {
+                StreamEvent::TextDelta { text } => Some(text),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(text, payload);
     }
 }
